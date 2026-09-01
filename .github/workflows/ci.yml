@@ -33,4 +33,34 @@ jobs:
         run: python -m src.model.train_rul
 
       - name: 테스트
-        run: pytest -q
+        run: pytest -q --ignore=tests/test_external_calce.py
+
+  external-holdout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 데이터 다운로드 (NASA PCoE) 및 최종 모델 학습
+        run: |
+          bash scripts/download_data.sh
+          python src/pipeline/parse_mat.py
+          python src/model/train.py
+
+      - name: 데이터 다운로드 (CALCE - 학습에 전혀 쓰이지 않은 외부 배터리)
+        run: bash scripts/download_calce.sh
+
+      - name: 외부 홀드아웃 피처 추출 및 평가
+        run: |
+          python -m src.pipeline.parse_calce
+          python -m src.model.eval_external
+
+      - name: 외부 홀드아웃 회귀 테스트
+        run: pytest -q tests/test_external_calce.py

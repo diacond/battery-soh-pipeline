@@ -21,6 +21,7 @@ from src.model.train import EOL_SOH_THRESHOLD, FEATURE_COLUMNS
 from src.api.explain import explain_diagnosis
 
 MODEL_PATH = Path("data/processed/soh_model.joblib")
+RUL_MODEL_PATH = Path("data/processed/rul_model.joblib")
 
 app = FastAPI(
     title="Battery SOH Diagnosis API",
@@ -29,6 +30,7 @@ app = FastAPI(
 )
 
 _model = None
+_rul_model = None
 
 
 def get_model():
@@ -41,6 +43,18 @@ def get_model():
             )
         _model = joblib.load(MODEL_PATH)
     return _model
+
+
+def get_rul_model():
+    global _rul_model
+    if _rul_model is None:
+        if not RUL_MODEL_PATH.exists():
+            raise HTTPException(
+                status_code=503,
+                detail="RUL 모델이 아직 학습되지 않았습니다. `python -m src.model.train_rul`을 먼저 실행하세요.",
+            )
+        _rul_model = joblib.load(RUL_MODEL_PATH)
+    return _rul_model
 
 
 class CycleReading(BaseModel):
@@ -62,9 +76,18 @@ class DiagnosisResponse(BaseModel):
     explanation: str
 
 
+class RulResponse(BaseModel):
+    predicted_rul_cycles: float
+    note: str
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": MODEL_PATH.exists()}
+    return {
+        "status": "ok",
+        "soh_model_loaded": MODEL_PATH.exists(),
+        "rul_model_loaded": RUL_MODEL_PATH.exists(),
+    }
 
 
 @app.post("/v1/battery/diagnose", response_model=DiagnosisResponse)
@@ -79,4 +102,23 @@ def diagnose(reading: CycleReading):
         is_below_eol_threshold=predicted_soh < EOL_SOH_THRESHOLD,
         eol_threshold=EOL_SOH_THRESHOLD,
         explanation=explain_diagnosis(reading.model_dump(), predicted_soh),
+    )
+
+
+@app.post("/v1/battery/predict-rul", response_model=RulResponse)
+def predict_rul(reading: CycleReading):
+    """잔여 수명(RUL) 예측.
+
+    주의: 검증 결과 배터리에 따라 예측 편차가 컸다(README 참고, 홀드아웃
+    LOBO 평균 R2 0.69, 배터리별로 0.24~0.91까지 편차). SOH 예측보다
+    신뢰도가 낮으므로 이 값은 단독 의사결정 근거로 쓰지 말고 참고용으로만
+    노출한다.
+    """
+    model = get_rul_model()
+    row = pd.DataFrame([reading.model_dump()])[FEATURE_COLUMNS]
+    predicted_rul = float(model.predict(row)[0])
+
+    return RulResponse(
+        predicted_rul_cycles=round(predicted_rul, 1),
+        note="참고용 추정치입니다. 배터리별 편차가 커 SOH 예측만큼 신뢰하지 마세요.",
     )

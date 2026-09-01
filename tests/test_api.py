@@ -32,3 +32,21 @@ def test_diagnose_normal_reading():
 def test_diagnose_rejects_missing_fields():
     resp = client.post("/v1/battery/diagnose", json={"cycles_seen": 10})
     assert resp.status_code == 422
+
+
+def test_predict_rul():
+    sample = {
+        "cycles_seen": 50,
+        "ambient_temperature_c": 24,
+        "discharge_duration_s": 3200,
+        "voltage_mean": 3.6,
+        "voltage_min": 2.7,
+        "current_mean": -2.0,
+        "temperature_mean": 33.0,
+        "temperature_max": 41.0,
+    }
+    resp = client.post("/v1/battery/predict-rul", json=sample)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["predicted_rul_cycles"] >= 0
+    assert "note" in body

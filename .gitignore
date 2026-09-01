@@ -6,6 +6,7 @@ venv/
 .pytest_cache/
 data/raw/*.mat
 !data/raw/.gitkeep
+data/external/calce/
 logs/
 data/processed/*.csv
 data/processed/*.joblib

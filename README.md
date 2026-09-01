@@ -101,6 +101,39 @@ API 응답에도 RUL 예측값에는 "참고용, SOH만큼 신뢰하지 말 것"
 note를 같이 반환하게 만들었다 — 모델 성능을 실제보다 좋게 포장하지
 않고, 불확실성을 있는 그대로 전달해야 한다고 판단했다.
 
+## MSA 변형 — 예측/설명 서비스 분리
+
+`src/api/main.py`는 모델 로딩·예측·설명을 한 프로세스에서 처리하는
+모놀리식 구조다. 이게 이 프로젝트 규모에는 맞는 선택이지만, "실제
+서비스라면 어디서 경계를 나눌 것인가"를 보여주기 위해 `src/msa/`
+아래에 같은 로직을 세 서비스로 쪼갠 버전을 추가로 만들었다.
+
+```
+src/msa/
+  predict_service/  → 피처를 받아 SOH/RUL 숫자만 예측 (모델 재학습 주기)
+  explain_service/  → 예측값을 자연어로 설명 (LLM 프롬프트/톤 변경 주기)
+  gateway/           → 위 둘을 순서대로 호출해 기존 API와 동일한 응답 조립
+```
+
+두 서비스로 나눈 기준은 "재배포 주기가 다른가"다. 모델을 새로 학습해서
+배포하는 일과, 설명 문구·LLM 프롬프트를 튜닝하는 일은 완전히 다른
+빈도로 일어나는데, 하나로 묶여 있으면 설명 문구 하나 고치자고 예측
+서비스까지 같이 재배포해야 한다. 게이트웨이는 설명 서비스가 죽어도
+예측 결과 자체는 내려주도록 만들어(서비스 경계에서도 fail-open 원칙
+유지) `tests/test_msa.py`에 그 경우까지 테스트해뒀다.
+
+**한계.** 이 프로젝트를 만든 환경엔 Docker 데몬이 없어서
+`docker-compose`로 컨테이너 3개를 실제로 띄워 네트워킹까지 확인하지는
+못했다. 대신 `tests/test_msa.py`는 httpx의 ASGITransport로 세 앱을
+프로세스 안에서 직접 연결해 오케스트레이션 로직(호출 순서, 응답 조립,
+장애 시 fail-open)은 검증했다. `docker-compose up`이 실제로 되는지는
+Docker가 있는 환경에서 직접 확인이 필요하다.
+
+```bash
+docker-compose up --build
+curl -X POST localhost:8000/v1/battery/diagnose -H "Content-Type: application/json" -d '{...}'
+```
+
 ## 실행 방법
 
 ```bash
@@ -114,10 +147,13 @@ python src/pipeline/parse_mat.py
 python src/model/train.py
 python -m src.model.train_rul
 
-# 3) API 서버 실행
+# 3-A) 모놀리식 API 서버 실행
 uvicorn src.api.main:app --reload
 
-# 4) 테스트
+# 3-B) 또는 MSA 변형 (Docker 필요)
+docker-compose up --build
+
+# 4) 테스트 (모놀리식 + MSA 오케스트레이션 로직 포함)
 pytest
 ```
 
@@ -133,7 +169,9 @@ SOH/RUL 모델 학습, 테스트까지 전체 파이프라인을 처음부터 �
 
 - RUL 예측에서 B0006이 새 피처로 오히려 나빠진 원인, B0007이 여전히
   어려운 원인을 곡선 형태 클러스터링 등으로 더 파고들기
-- Docker 컨테이너화 및 MSA 경계(예측 서비스 / 설명 서비스)로 분리
+- `docker-compose up`이 실제 Docker 환경에서 이상 없이 뜨는지 검증
+  (이 프로젝트를 만든 환경엔 Docker 데몬이 없어 오케스트레이션 로직만
+  테스트로 확인했고, 실제 컨테이너 네트워킹은 미검증)
 - 지금은 배터리 4개뿐이라 LOBO 폴드도 4개뿐인데, 폴드 수가 적을수록
   "운 좋게 잘 나온 평균"일 위험이 있다는 점은 면접에서 한계로 솔직히
   언급할 부분

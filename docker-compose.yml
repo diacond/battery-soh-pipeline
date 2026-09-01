@@ -1,0 +1,27 @@
+services:
+  predict:
+    build: .
+    command: uvicorn src.msa.predict_service.main:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+
+  explain:
+    build: .
+    command: uvicorn src.msa.explain_service.main:app --host 0.0.0.0 --port 8002
+    ports:
+      - "8002:8002"
+    environment:
+      # 없어도 정상 동작한다(fail-open, src/api/explain.py 참고). 있으면 LLM 설명 사용.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+  gateway:
+    build: .
+    command: uvicorn src.msa.gateway.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      - PREDICT_SERVICE_URL=http://predict:8001
+      - EXPLAIN_SERVICE_URL=http://explain:8002
+    depends_on:
+      - predict
+      - explain

@@ -6,4 +6,6 @@ joblib
 fastapi
 uvicorn[standard]
 anthropic
+httpx
 pytest
+pytest-asyncio

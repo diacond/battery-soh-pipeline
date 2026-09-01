@@ -63,7 +63,13 @@ class CycleReading(BaseModel):
     discharge_duration_s: float = Field(..., description="방전 1회 소요 시간(초)")
     voltage_mean: float
     voltage_min: float
+    voltage_std: float = Field(..., description="방전 구간 전압의 표준편차")
+    voltage_slope: float = Field(..., description="방전 곡선의 평균 기울기(V/s), 선형회귀 근사")
+    time_to_knee_voltage_s: float = Field(
+        ..., description=f"전압이 {3.0}V 이하로 처음 떨어지기까지 걸린 시간(초)"
+    )
     current_mean: float
+    current_std: float = Field(..., description="방전 구간 전류의 표준편차")
     temperature_mean: float
     temperature_max: float
 

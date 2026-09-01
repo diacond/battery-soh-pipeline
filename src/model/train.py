@@ -28,7 +28,11 @@ FEATURE_COLUMNS = [
     "discharge_duration_s",
     "voltage_mean",
     "voltage_min",
+    "voltage_std",
+    "voltage_slope",
+    "time_to_knee_voltage_s",
     "current_mean",
+    "current_std",
     "temperature_mean",
     "temperature_max",
 ]

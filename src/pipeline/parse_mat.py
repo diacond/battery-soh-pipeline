@@ -22,6 +22,30 @@ import pandas as pd
 import scipy.io as sio
 
 RATED_CAPACITY_AH = 2.0  # NASA PCoE 데이터셋 공식 정격 용량
+VOLTAGE_KNEE_THRESHOLD_V = 3.0  # 방전 말기 급격한 전압 강하가 시작되는 기준 전압
+
+
+def _voltage_slope(time: np.ndarray, voltage: np.ndarray) -> float:
+    """방전 곡선의 평균 기울기(V/s). 1차 선형회귀로 근사."""
+    if time.size < 2:
+        return np.nan
+    slope, _ = np.polyfit(time, voltage, deg=1)
+    return float(slope)
+
+
+def _time_to_voltage_threshold(time: np.ndarray, voltage: np.ndarray, threshold: float) -> float:
+    """전압이 threshold 이하로 처음 떨어지는 시점(초). 못 도달하면 전체 방전시간을 반환.
+
+    이 값이 짧을수록 "내부저항이 커져서 전압이 빨리 무너진다"는 뜻이라
+    열화가 상당히 진행된 신호로 해석할 수 있다.
+    """
+    if time.size == 0:
+        return np.nan
+    below = np.where(voltage <= threshold)[0]
+    if below.size == 0:
+        return float(time.max() - time.min())
+    idx = below[0]
+    return float(time[idx] - time.min())
 
 
 def _summarize_discharge_cycle(cycle_index: int, cycle: dict) -> dict:
@@ -39,7 +63,11 @@ def _summarize_discharge_cycle(cycle_index: int, cycle: dict) -> dict:
         "discharge_duration_s": float(time.max() - time.min()) if time.size else np.nan,
         "voltage_mean": float(voltage.mean()) if voltage.size else np.nan,
         "voltage_min": float(voltage.min()) if voltage.size else np.nan,
+        "voltage_std": float(voltage.std()) if voltage.size else np.nan,
+        "voltage_slope": _voltage_slope(time, voltage),
+        "time_to_knee_voltage_s": _time_to_voltage_threshold(time, voltage, VOLTAGE_KNEE_THRESHOLD_V),
         "current_mean": float(current.mean()) if current.size else np.nan,
+        "current_std": float(current.std()) if current.size else np.nan,
         "temperature_mean": float(temperature.mean()) if temperature.size else np.nan,
         "temperature_max": float(temperature.max()) if temperature.size else np.nan,
     }

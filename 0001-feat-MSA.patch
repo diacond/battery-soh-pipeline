@@ -1,0 +1,593 @@
+From 1444a44f7ed7a5733a869428964bfe40ce1f8997 Mon Sep 17 00:00:00 2001
+From: diacond <tiger874587@gmail.com>
+Date: Tue, 1 Sep 2026 07:51:40 +0000
+Subject: [PATCH] =?UTF-8?q?feat:=20MSA=20=EB=B3=80=ED=98=95=20=EC=B6=94?=
+ =?UTF-8?q?=EA=B0=80=20-=20=EC=98=88=EC=B8=A1/=EC=84=A4=EB=AA=85=20?=
+ =?UTF-8?q?=EC=84=9C=EB=B9=84=EC=8A=A4=20=EB=B6=84=EB=A6=AC=20+=20?=
+ =?UTF-8?q?=EA=B2=8C=EC=9D=B4=ED=8A=B8=EC=9B=A8=EC=9D=B4?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+모놀리식(src/api/main.py)은 그대로 두고, src/msa/ 아래에 predict_service
+/explain_service/gateway 3개로 쪼갠 버전을 추가. 재배포 주기(모델 학습
+주기 vs 설명 문구/LLM 프롬프트 튜닝 주기)가 다르다는 걸 분리 기준으로
+삼음. 게이트웨이는 설명 서비스가 죽어도 예측 결과는 내려주는
+fail-open을 서비스 경계에서도 유지.
+
+Docker 데몬이 없는 환경이라 docker-compose 자체는 미검증. 대신
+httpx ASGITransport로 세 앱을 인프로세스 연결해 오케스트레이션 로직
+(호출 순서/응답 조립/장애 시 fail-open)은 테스트로 확인함
+(tests/test_msa.py).
+---
+ Dockerfile                          |   3 +
+ README.md                           |  44 +++++++++-
+ docker-compose.yml                  |  27 ++++++
+ pytest.ini                          |   2 +
+ requirements.txt                    |   2 +
+ src/msa/__init__.py                 |   0
+ src/msa/explain_service/__init__.py |   0
+ src/msa/explain_service/main.py     |  45 ++++++++++
+ src/msa/gateway/__init__.py         |   0
+ src/msa/gateway/main.py             | 112 ++++++++++++++++++++++++
+ src/msa/predict_service/__init__.py |   0
+ src/msa/predict_service/main.py     |  85 ++++++++++++++++++
+ tests/test_msa.py                   | 128 ++++++++++++++++++++++++++++
+ 13 files changed, 445 insertions(+), 3 deletions(-)
+ create mode 100644 docker-compose.yml
+ create mode 100644 pytest.ini
+ create mode 100644 src/msa/__init__.py
+ create mode 100644 src/msa/explain_service/__init__.py
+ create mode 100644 src/msa/explain_service/main.py
+ create mode 100644 src/msa/gateway/__init__.py
+ create mode 100644 src/msa/gateway/main.py
+ create mode 100644 src/msa/predict_service/__init__.py
+ create mode 100644 src/msa/predict_service/main.py
+ create mode 100644 tests/test_msa.py
+
+diff --git a/Dockerfile b/Dockerfile
+index d424ead..cf42766 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -7,6 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
+ 
+ COPY src/ src/
+ COPY data/processed/soh_model.joblib data/processed/soh_model.joblib
++COPY data/processed/rul_model.joblib data/processed/rul_model.joblib
+ 
++# 기본 실행 대상은 모놀리식 API. docker-compose.yml은 같은 이미지를 predict/explain/
++# gateway 세 컨테이너로 나눠 command만 다르게 띄운다 (MSA 변형, README 참고).
+ EXPOSE 8000
+ CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+diff --git a/README.md b/README.md
+index cbddbbc..0dc21dc 100644
+--- a/README.md
++++ b/README.md
+@@ -101,6 +101,39 @@ API 응답에도 RUL 예측값에는 "참고용, SOH만큼 신뢰하지 말 것"
+ note를 같이 반환하게 만들었다 — 모델 성능을 실제보다 좋게 포장하지
+ 않고, 불확실성을 있는 그대로 전달해야 한다고 판단했다.
+ 
++## MSA 변형 — 예측/설명 서비스 분리
++
++`src/api/main.py`는 모델 로딩·예측·설명을 한 프로세스에서 처리하는
++모놀리식 구조다. 이게 이 프로젝트 규모에는 맞는 선택이지만, "실제
++서비스라면 어디서 경계를 나눌 것인가"를 보여주기 위해 `src/msa/`
++아래에 같은 로직을 세 서비스로 쪼갠 버전을 추가로 만들었다.
++
++```
++src/msa/
++  predict_service/  → 피처를 받아 SOH/RUL 숫자만 예측 (모델 재학습 주기)
++  explain_service/  → 예측값을 자연어로 설명 (LLM 프롬프트/톤 변경 주기)
++  gateway/           → 위 둘을 순서대로 호출해 기존 API와 동일한 응답 조립
++```
++
++두 서비스로 나눈 기준은 "재배포 주기가 다른가"다. 모델을 새로 학습해서
++배포하는 일과, 설명 문구·LLM 프롬프트를 튜닝하는 일은 완전히 다른
++빈도로 일어나는데, 하나로 묶여 있으면 설명 문구 하나 고치자고 예측
++서비스까지 같이 재배포해야 한다. 게이트웨이는 설명 서비스가 죽어도
++예측 결과 자체는 내려주도록 만들어(서비스 경계에서도 fail-open 원칙
++유지) `tests/test_msa.py`에 그 경우까지 테스트해뒀다.
++
++**한계.** 이 프로젝트를 만든 환경엔 Docker 데몬이 없어서
++`docker-compose`로 컨테이너 3개를 실제로 띄워 네트워킹까지 확인하지는
++못했다. 대신 `tests/test_msa.py`는 httpx의 ASGITransport로 세 앱을
++프로세스 안에서 직접 연결해 오케스트레이션 로직(호출 순서, 응답 조립,
++장애 시 fail-open)은 검증했다. `docker-compose up`이 실제로 되는지는
++Docker가 있는 환경에서 직접 확인이 필요하다.
++
++```bash
++docker-compose up --build
++curl -X POST localhost:8000/v1/battery/diagnose -H "Content-Type: application/json" -d '{...}'
++```
++
+ ## 실행 방법
+ 
+ ```bash
+@@ -114,10 +147,13 @@ python src/pipeline/parse_mat.py
+ python src/model/train.py
+ python -m src.model.train_rul
+ 
+-# 3) API 서버 실행
++# 3-A) 모놀리식 API 서버 실행
+ uvicorn src.api.main:app --reload
+ 
+-# 4) 테스트
++# 3-B) 또는 MSA 변형 (Docker 필요)
++docker-compose up --build
++
++# 4) 테스트 (모놀리식 + MSA 오케스트레이션 로직 포함)
+ pytest
+ ```
+ 
+@@ -133,7 +169,9 @@ SOH/RUL 모델 학습, 테스트까지 전체 파이프라인을 처음부터 
+ 
+ - RUL 예측에서 B0006이 새 피처로 오히려 나빠진 원인, B0007이 여전히
+   어려운 원인을 곡선 형태 클러스터링 등으로 더 파고들기
+-- Docker 컨테이너화 및 MSA 경계(예측 서비스 / 설명 서비스)로 분리
++- `docker-compose up`이 실제 Docker 환경에서 이상 없이 뜨는지 검증
++  (이 프로젝트를 만든 환경엔 Docker 데몬이 없어 오케스트레이션 로직만
++  테스트로 확인했고, 실제 컨테이너 네트워킹은 미검증)
+ - 지금은 배터리 4개뿐이라 LOBO 폴드도 4개뿐인데, 폴드 수가 적을수록
+   "운 좋게 잘 나온 평균"일 위험이 있다는 점은 면접에서 한계로 솔직히
+   언급할 부분
+diff --git a/docker-compose.yml b/docker-compose.yml
+new file mode 100644
+index 0000000..6bb834b
+--- /dev/null
++++ b/docker-compose.yml
+@@ -0,0 +1,27 @@
++services:
++  predict:
++    build: .
++    command: uvicorn src.msa.predict_service.main:app --host 0.0.0.0 --port 8001
++    ports:
++      - "8001:8001"
++
++  explain:
++    build: .
++    command: uvicorn src.msa.explain_service.main:app --host 0.0.0.0 --port 8002
++    ports:
++      - "8002:8002"
++    environment:
++      # 없어도 정상 동작한다(fail-open, src/api/explain.py 참고). 있으면 LLM 설명 사용.
++      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
++
++  gateway:
++    build: .
++    command: uvicorn src.msa.gateway.main:app --host 0.0.0.0 --port 8000
++    ports:
++      - "8000:8000"
++    environment:
++      - PREDICT_SERVICE_URL=http://predict:8001
++      - EXPLAIN_SERVICE_URL=http://explain:8002
++    depends_on:
++      - predict
++      - explain
+diff --git a/pytest.ini b/pytest.ini
+new file mode 100644
+index 0000000..2f4c80e
+--- /dev/null
++++ b/pytest.ini
+@@ -0,0 +1,2 @@
++[pytest]
++asyncio_mode = auto
+diff --git a/requirements.txt b/requirements.txt
+index 0b180a4..fafc5ee 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -6,4 +6,6 @@ joblib
+ fastapi
+ uvicorn[standard]
+ anthropic
++httpx
+ pytest
++pytest-asyncio
+diff --git a/src/msa/__init__.py b/src/msa/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/msa/explain_service/__init__.py b/src/msa/explain_service/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/msa/explain_service/main.py b/src/msa/explain_service/main.py
+new file mode 100644
+index 0000000..d43acc4
+--- /dev/null
++++ b/src/msa/explain_service/main.py
+@@ -0,0 +1,45 @@
++"""
++설명 서비스 (MSA 변형).
++
++예측값(숫자)을 자연어 진단 코멘트로 바꾸는 책임만 가진다. 예측 모델이
++뭘로 바뀌든 이 서비스는 몰라도 되고, 반대로 LLM 프롬프트나 설명 톤을
++바꿔도 예측 서비스는 재배포할 필요가 없다 — 이게 이 경계를 나눈 이유다.
++
++기존 `src/api/explain.py`의 규칙(숫자 판단은 결정론적으로, LLM은 설명만,
++실패 시 fail-open)을 그대로 재사용한다.
++"""
++
++from __future__ import annotations
++
++from fastapi import FastAPI
++from pydantic import BaseModel
++
++from src.api.explain import explain_diagnosis
++from src.model.train import EOL_SOH_THRESHOLD
++
++app = FastAPI(title="Battery Explain Service", version="0.1.0")
++
++
++class ExplainRequest(BaseModel):
++    reading: dict
++    predicted_soh: float
++
++
++class ExplainResponse(BaseModel):
++    explanation: str
++    is_below_eol_threshold: bool
++    eol_threshold: float
++
++
++@app.get("/health")
++def health():
++    return {"status": "ok"}
++
++
++@app.post("/v1/explain", response_model=ExplainResponse)
++def explain(req: ExplainRequest):
++    return ExplainResponse(
++        explanation=explain_diagnosis(req.reading, req.predicted_soh),
++        is_below_eol_threshold=req.predicted_soh < EOL_SOH_THRESHOLD,
++        eol_threshold=EOL_SOH_THRESHOLD,
++    )
+diff --git a/src/msa/gateway/__init__.py b/src/msa/gateway/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/msa/gateway/main.py b/src/msa/gateway/main.py
+new file mode 100644
+index 0000000..26d07f3
+--- /dev/null
++++ b/src/msa/gateway/main.py
+@@ -0,0 +1,112 @@
++"""
++게이트웨이 (MSA 변형).
++
++`predict_service`와 `explain_service`를 순서대로 호출해서, 기존
++모놀리식 API(`src/api/main.py`)의 `/v1/battery/diagnose` 응답과 같은
++모양을 그대로 재현한다. 클라이언트(프론트엔드) 입장에서는 백엔드가
++서비스 3개로 쪼개졌는지 몰라도 되도록 계약(response schema)을
++유지하는 것이 목표다.
++
++내부 서비스 주소는 환경변수로 주입한다(`PREDICT_SERVICE_URL`,
++`EXPLAIN_SERVICE_URL`). docker-compose 안에서는 서비스명이 곧 호스트명이
++되므로 기본값을 `http://predict:8001`, `http://explain:8002`로 뒀다.
++"""
++
++from __future__ import annotations
++
++import os
++
++import httpx
++from fastapi import FastAPI, HTTPException
++from pydantic import BaseModel, Field
++
++PREDICT_SERVICE_URL = os.environ.get("PREDICT_SERVICE_URL", "http://predict:8001")
++EXPLAIN_SERVICE_URL = os.environ.get("EXPLAIN_SERVICE_URL", "http://explain:8002")
++EOL_SOH_THRESHOLD = 0.70
++
++app = FastAPI(title="Battery Diagnosis Gateway", version="0.1.0")
++
++
++def get_predict_client() -> httpx.AsyncClient:
++    return httpx.AsyncClient(base_url=PREDICT_SERVICE_URL, timeout=5.0)
++
++
++def get_explain_client() -> httpx.AsyncClient:
++    return httpx.AsyncClient(base_url=EXPLAIN_SERVICE_URL, timeout=10.0)
++
++
++class CycleReading(BaseModel):
++    cycles_seen: int
++    ambient_temperature_c: float
++    discharge_duration_s: float
++    voltage_mean: float
++    voltage_min: float
++    voltage_std: float
++    voltage_slope: float
++    time_to_knee_voltage_s: float
++    current_mean: float
++    current_std: float
++    temperature_mean: float
++    temperature_max: float
++
++
++class DiagnosisResponse(BaseModel):
++    predicted_soh: float
++    soh_percent: float
++    is_below_eol_threshold: bool
++    eol_threshold: float
++    explanation: str
++
++
++@app.get("/health")
++async def health():
++    """게이트웨이 자신뿐 아니라 뒷단 서비스들이 살아있는지도 함께 확인한다."""
++    statuses = {}
++    async with get_predict_client() as client:
++        try:
++            r = await client.get("/health")
++            statuses["predict_service"] = r.json()
++        except httpx.HTTPError as exc:
++            statuses["predict_service"] = {"status": "unreachable", "error": str(exc)}
++
++    async with get_explain_client() as client:
++        try:
++            r = await client.get("/health")
++            statuses["explain_service"] = r.json()
++        except httpx.HTTPError as exc:
++            statuses["explain_service"] = {"status": "unreachable", "error": str(exc)}
++
++    return {"status": "ok", "dependencies": statuses}
++
++
++@app.post("/v1/battery/diagnose", response_model=DiagnosisResponse)
++async def diagnose(reading: CycleReading):
++    payload = reading.model_dump()
++
++    async with get_predict_client() as client:
++        try:
++            resp = await client.post("/v1/predict/soh", json=payload)
++            resp.raise_for_status()
++        except httpx.HTTPError as exc:
++            raise HTTPException(status_code=502, detail=f"predict_service 호출 실패: {exc}") from exc
++    predicted_soh = resp.json()["predicted_soh"]
++
++    async with get_explain_client() as client:
++        try:
++            resp = await client.post(
++                "/v1/explain", json={"reading": payload, "predicted_soh": predicted_soh}
++            )
++            resp.raise_for_status()
++            explanation = resp.json()["explanation"]
++        except httpx.HTTPError:
++            # 설명 서비스가 죽어도 예측 자체는 이미 확보했으니 진단 응답은 내려준다
++            # (fail-open을 서비스 경계에서도 동일하게 적용).
++            explanation = f"SOH {predicted_soh*100:.1f}% (설명 서비스에 연결할 수 없어 기본 수치만 표시합니다.)"
++
++    return DiagnosisResponse(
++        predicted_soh=round(predicted_soh, 4),
++        soh_percent=round(predicted_soh * 100, 1),
++        is_below_eol_threshold=predicted_soh < EOL_SOH_THRESHOLD,
++        eol_threshold=EOL_SOH_THRESHOLD,
++        explanation=explanation,
++    )
+diff --git a/src/msa/predict_service/__init__.py b/src/msa/predict_service/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/msa/predict_service/main.py b/src/msa/predict_service/main.py
+new file mode 100644
+index 0000000..563d1d6
+--- /dev/null
++++ b/src/msa/predict_service/main.py
+@@ -0,0 +1,85 @@
++"""
++예측 서비스 (MSA 변형).
++
++원래 `src/api/main.py`는 모델 로딩과 예측, 설명 생성을 한 프로세스
++안에서 다 처리하는 모놀리식 구조다. 포트폴리오 프로젝트 규모에서는
++그게 더 단순하고 옳은 선택이지만, "실제 서비스라면 어디서 쪼갤
++것인가"를 보여주기 위해 같은 로직을 두 개의 독립 서비스로 나눠봤다.
++
++이 서비스의 책임은 딱 하나, 숫자 피처를 받아 SOH/RUL 예측값(숫자)만
++돌려주는 것이다. 자연어 설명은 이 서비스가 전혀 모른다 — 그건
++`explain_service`의 책임이다. 이렇게 나누면 예측 모델을 재학습해서
++배포하는 주기와, 설명 문구/LLM 프롬프트를 바꾸는 주기가 서로 달라도
++서로의 배포에 영향을 주지 않는다는 이점이 생긴다.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import joblib
++import pandas as pd
++from fastapi import FastAPI, HTTPException
++from pydantic import BaseModel
++
++from src.model.train import FEATURE_COLUMNS
++
++MODEL_PATH = Path("data/processed/soh_model.joblib")
++RUL_MODEL_PATH = Path("data/processed/rul_model.joblib")
++
++app = FastAPI(title="Battery Predict Service", version="0.1.0")
++
++_soh_model = None
++_rul_model = None
++
++
++def _load(path: Path):
++    if not path.exists():
++        raise HTTPException(status_code=503, detail=f"모델이 없습니다: {path}")
++    return joblib.load(path)
++
++
++class CycleFeatures(BaseModel):
++    cycles_seen: int
++    ambient_temperature_c: float
++    discharge_duration_s: float
++    voltage_mean: float
++    voltage_min: float
++    voltage_std: float
++    voltage_slope: float
++    time_to_knee_voltage_s: float
++    current_mean: float
++    current_std: float
++    temperature_mean: float
++    temperature_max: float
++
++
++class SohPrediction(BaseModel):
++    predicted_soh: float
++
++
++class RulPrediction(BaseModel):
++    predicted_rul_cycles: float
++
++
++@app.get("/health")
++def health():
++    return {"status": "ok", "soh_model_loaded": MODEL_PATH.exists(), "rul_model_loaded": RUL_MODEL_PATH.exists()}
++
++
++@app.post("/v1/predict/soh", response_model=SohPrediction)
++def predict_soh(features: CycleFeatures):
++    global _soh_model
++    if _soh_model is None:
++        _soh_model = _load(MODEL_PATH)
++    row = pd.DataFrame([features.model_dump()])[FEATURE_COLUMNS]
++    return SohPrediction(predicted_soh=float(_soh_model.predict(row)[0]))
++
++
++@app.post("/v1/predict/rul", response_model=RulPrediction)
++def predict_rul(features: CycleFeatures):
++    global _rul_model
++    if _rul_model is None:
++        _rul_model = _load(RUL_MODEL_PATH)
++    row = pd.DataFrame([features.model_dump()])[FEATURE_COLUMNS]
++    return RulPrediction(predicted_rul_cycles=float(_rul_model.predict(row)[0]))
+diff --git a/tests/test_msa.py b/tests/test_msa.py
+new file mode 100644
+index 0000000..1da7508
+--- /dev/null
++++ b/tests/test_msa.py
+@@ -0,0 +1,128 @@
++"""
++MSA(예측 서비스 / 설명 서비스 / 게이트웨이) 통합 테스트.
++
++이 프로젝트를 만든 환경에는 Docker 데몬이 없어서 docker-compose로 실제
++컨테이너 3개를 띄우는 것까지는 검증하지 못했다. 대신 httpx의
++ASGITransport로 각 FastAPI 앱을 프로세스 안에서 직접 연결해,
++"게이트웨이가 예측 서비스 → 설명 서비스 순서로 호출해서 올바른 응답을
++조립하는지"는 네트워크 없이도 확인할 수 있다.
++
++즉 이 테스트가 보장하는 것은 서비스 간 계약(요청/응답 스키마)과
++오케스트레이션 로직이지, docker-compose 네트워킹 자체는 아니다.
++docker-compose 실행 자체는 README에 적어둔 대로 직접 실행해서
++확인해야 한다.
++"""
++
++from __future__ import annotations
++
++import httpx
++import pytest
++
++from src.msa.explain_service.main import app as explain_app
++from src.msa.gateway import main as gateway_main
++from src.msa.predict_service.main import app as predict_app
++
++SAMPLE_READING = {
++    "cycles_seen": 50,
++    "ambient_temperature_c": 24,
++    "discharge_duration_s": 3200,
++    "voltage_mean": 3.6,
++    "voltage_min": 2.7,
++    "voltage_std": 0.22,
++    "voltage_slope": -0.00022,
++    "time_to_knee_voltage_s": 3100.0,
++    "current_mean": -2.0,
++    "current_std": 0.4,
++    "temperature_mean": 33.0,
++    "temperature_max": 41.0,
++}
++
++
++def _wire_gateway_to_in_process_apps(monkeypatch):
++    """게이트웨이가 실제 네트워크 대신 인프로세스 ASGI 앱을 호출하도록 연결."""
++
++    def _predict_client():
++        return httpx.AsyncClient(
++            transport=httpx.ASGITransport(app=predict_app), base_url="http://predict"
++        )
++
++    def _explain_client():
++        return httpx.AsyncClient(
++            transport=httpx.ASGITransport(app=explain_app), base_url="http://explain"
++        )
++
++    monkeypatch.setattr(gateway_main, "get_predict_client", _predict_client)
++    monkeypatch.setattr(gateway_main, "get_explain_client", _explain_client)
++
++
++@pytest.mark.asyncio
++async def test_predict_service_soh():
++    async with httpx.AsyncClient(
++        transport=httpx.ASGITransport(app=predict_app), base_url="http://predict"
++    ) as client:
++        resp = await client.post("/v1/predict/soh", json=SAMPLE_READING)
++    assert resp.status_code == 200
++    assert 0.0 <= resp.json()["predicted_soh"] <= 1.2
++
++
++@pytest.mark.asyncio
++async def test_explain_service():
++    async with httpx.AsyncClient(
++        transport=httpx.ASGITransport(app=explain_app), base_url="http://explain"
++    ) as client:
++        resp = await client.post(
++            "/v1/explain", json={"reading": SAMPLE_READING, "predicted_soh": 0.5}
++        )
++    assert resp.status_code == 200
++    body = resp.json()
++    assert body["is_below_eol_threshold"] is True
++    assert len(body["explanation"]) > 0
++
++
++@pytest.mark.asyncio
++async def test_gateway_orchestrates_predict_then_explain(monkeypatch):
++    _wire_gateway_to_in_process_apps(monkeypatch)
++
++    async with httpx.AsyncClient(
++        transport=httpx.ASGITransport(app=gateway_main.app), base_url="http://gateway"
++    ) as client:
++        resp = await client.post("/v1/battery/diagnose", json=SAMPLE_READING)
++
++    assert resp.status_code == 200
++    body = resp.json()
++    assert 0.0 <= body["predicted_soh"] <= 1.2
++    assert len(body["explanation"]) > 0
++    # 게이트웨이 응답 스키마가 기존 모놀리식 API(src/api/main.py)와 동일해야
++    # 클라이언트가 뒷단 구조 변화를 몰라도 되게 하는 목적을 달성한다.
++    assert set(body.keys()) == {
++        "predicted_soh",
++        "soh_percent",
++        "is_below_eol_threshold",
++        "eol_threshold",
++        "explanation",
++    }
++
++
++@pytest.mark.asyncio
++async def test_gateway_fails_open_when_explain_service_down(monkeypatch):
++    """설명 서비스가 죽어도 진단 자체는 내려줘야 한다 (서비스 경계에서의 fail-open)."""
++
++    def _predict_client():
++        return httpx.AsyncClient(
++            transport=httpx.ASGITransport(app=predict_app), base_url="http://predict"
++        )
++
++    def _broken_explain_client():
++        # 실제로 아무도 듣고 있지 않은 로컬 포트로 향하게 해서 연결 실패를 재현한다.
++        return httpx.AsyncClient(base_url="http://127.0.0.1:1", timeout=1.0)
++
++    monkeypatch.setattr(gateway_main, "get_predict_client", _predict_client)
++    monkeypatch.setattr(gateway_main, "get_explain_client", _broken_explain_client)
++
++    async with httpx.AsyncClient(
++        transport=httpx.ASGITransport(app=gateway_main.app), base_url="http://gateway"
++    ) as client:
++        resp = await client.post("/v1/battery/diagnose", json=SAMPLE_READING)
++
++    assert resp.status_code == 200
++    assert "설명 서비스에 연결할 수 없어" in resp.json()["explanation"]
+-- 
+2.43.0
+

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 데이터 다운로드 (NASA PCoE)
+        run: bash scripts/download_data.sh
+
+      - name: 파이프라인 실행 (파싱 → 피처/라벨 생성)
+        run: python src/pipeline/parse_mat.py
+
+      - name: 모델 학습 및 Leave-One-Battery-Out 평가
+        run: python src/model/train.py
+
+      - name: RUL 모델 학습
+        run: python -m src.model.train_rul
+
+      - name: 테스트
+        run: pytest -q

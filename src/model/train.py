@@ -1,14 +1,10 @@
 """
 배터리 SOH(State of Health) 예측 베이스라인 모델.
 
-핵심 설계 결정 (README/면접에서 설명할 부분):
-1. 평가 방식 - Leave-One-Battery-Out(LOBO) cross-validation을 쓴다.
-   같은 배터리의 사이클을 무작위로 train/test에 섞으면 인접 사이클끼리
-   정보가 새어(leakage) 실제보다 성능이 부풀려진다. 실무에서 이 모델이
-   맞닥뜨릴 상황은 "한 번도 본 적 없는 새 배터리의 초기 사이클만 보고
-   미래 열화를 예측하는 것"이므로, 배터리 단위로 통째로 홀드아웃한다.
-2. RUL(Remaining Useful Life) 정의 - NASA PCoE 벤치마크 관례를 따라
-   SOH가 0.7(정격 용량의 70%) 밑으로 떨어지는 시점을 End-of-Life로 본다.
+1. 평가: Leave-One-Battery-Out(LOBO). 사이클을 무작위로 나누면 같은 배터리의
+   인접 사이클끼리 정보가 새어 성능이 부풀려진다. 실제로는 처음 보는 배터리를
+   예측해야 하므로 배터리 단위로 홀드아웃한다.
+2. RUL: NASA PCoE 관례대로 SOH 0.7 미만을 End-of-Life로 본다.
 """
 
 from __future__ import annotations

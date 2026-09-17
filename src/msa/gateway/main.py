@@ -1,15 +1,10 @@
 """
-게이트웨이 (MSA 변형).
+게이트웨이 (MSA).
 
-`predict_service`와 `explain_service`를 순서대로 호출해서, 기존
-모놀리식 API(`src/api/main.py`)의 `/v1/battery/diagnose` 응답과 같은
-모양을 그대로 재현한다. 클라이언트(프론트엔드) 입장에서는 백엔드가
-서비스 3개로 쪼개졌는지 몰라도 되도록 계약(response schema)을
-유지하는 것이 목표다.
-
-내부 서비스 주소는 환경변수로 주입한다(`PREDICT_SERVICE_URL`,
-`EXPLAIN_SERVICE_URL`). docker-compose 안에서는 서비스명이 곧 호스트명이
-되므로 기본값을 `http://predict:8001`, `http://explain:8002`로 뒀다.
+predict_service → explain_service 순서로 호출해 모놀리식 API
+(/v1/battery/diagnose)와 같은 응답을 조립한다.
+내부 주소는 PREDICT_SERVICE_URL, EXPLAIN_SERVICE_URL 환경변수로 받는다
+(기본값: http://predict:8001, http://explain:8002).
 """
 
 from __future__ import annotations

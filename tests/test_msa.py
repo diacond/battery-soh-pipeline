@@ -1,16 +1,9 @@
 """
-MSA(예측 서비스 / 설명 서비스 / 게이트웨이) 통합 테스트.
+MSA(예측 / 설명 / 게이트웨이) 통합 테스트.
 
-이 프로젝트를 만든 환경에는 Docker 데몬이 없어서 docker-compose로 실제
-컨테이너 3개를 띄우는 것까지는 검증하지 못했다. 대신 httpx의
-ASGITransport로 각 FastAPI 앱을 프로세스 안에서 직접 연결해,
-"게이트웨이가 예측 서비스 → 설명 서비스 순서로 호출해서 올바른 응답을
-조립하는지"는 네트워크 없이도 확인할 수 있다.
-
-즉 이 테스트가 보장하는 것은 서비스 간 계약(요청/응답 스키마)과
-오케스트레이션 로직이지, docker-compose 네트워킹 자체는 아니다.
-docker-compose 실행 자체는 README에 적어둔 대로 직접 실행해서
-확인해야 한다.
+httpx ASGITransport로 세 앱을 프로세스 안에서 연결해 호출 순서, 응답 조립,
+설명 서비스 장애 시 fail-open을 검증한다. docker-compose 네트워킹은
+이 테스트 범위 밖이다.
 """
 
 from __future__ import annotations
